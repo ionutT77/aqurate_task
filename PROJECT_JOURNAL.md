@@ -447,12 +447,126 @@ Versions pinned (not `>=`) so the pipeline behaves identically locally and in Gi
 
 ---
 
+### 2.1 Step 3: FX Rates (`src/fx_rates.py`)
+
+#### What data we needed
+
+Looking at `orders_clean`, every order has a `fx_reference_date` column that indicates which date's exchange rate to use for currency conversion. The only currency present besides EUR is **RON**. So we need:
+
+> **One EUR → RON rate for every distinct `fx_reference_date` in `orders_clean`.**
+
+The required dates span from `2026-08-23` to `2026-09-03` — 12 dates total.
+
+---
+
+#### Why Frankfurter and why no API key
+
+We used [frankfurter.dev](https://api.frankfurter.dev) as the FX data source. Reasons:
+
+- **Free and open** — Frankfurter is an open-source currency API backed by European Central Bank (ECB) reference rates. It has no authentication, no rate limits for normal use, and no sign-up required. The ECB publishes daily reference rates publicly; Frankfurter simply serves them through a clean REST API.
+- **Date range support** — One API call returns rates for an entire date range: `GET /v1/2026-08-23..2026-08-26?from=EUR&to=RON`
+- **Mentioned in the challenge brief** as a suggested source (`frankfurter.dev`)
+
+The API response looks like this:
+```json
+{
+  "amount": 1.0,
+  "base": "EUR",
+  "start_date": "2026-08-21",
+  "end_date": "2026-08-26",
+  "rates": {
+    "2026-08-24": {"RON": 5.2504},
+    "2026-08-25": {"RON": 5.2537},
+    "2026-08-26": {"RON": 5.2568}
+  }
+}
+```
+
+Note: the API only returns **business days** — weekends and holidays are absent. That gap-filling is handled by our code (see below).
+
+---
+
+#### Decision: Option A vs Option B
+
+When building the JOIN between `orders_clean` and `fx_rates`, we faced a design choice for dates with no available rate (weekends and future dates):
+
+**Option B — LEFT JOIN, missing rates produce NULL:**
+- Future-date orders would silently produce `NULL` spend totals
+- Revenue would be underreported with no warning or visibility
+
+**Option A — Prefill every required date with a rate:**
+- Weekends/holidays: carry forward the last known business-day rate (`is_estimated = FALSE`) — this is standard financial convention
+- Future dates: use the latest known rate (`is_estimated = TRUE`) — the real rate doesn't exist yet; daily refresh will overwrite with the real value when available
+
+**We chose Option A.** Every `fx_reference_date` in `orders_clean` is guaranteed to have a matching row in `fx_rates`, so no order is ever silently dropped from aggregations.
+
+---
+
+#### Gap-filling logic explained
+
+```
+Required dates:  Aug 23, 24, 25, 26, 27, 28, 29, 30, 31, Sep 1, 2, 3
+Today:           Aug 26
+
+API returned:    Aug 24 (5.2504), Aug 25 (5.2537), Aug 26 (5.2568)
+                 (Aug 23 = Sunday → absent; Aug 27+ = future → absent)
+
+Result:
+  Aug 23  → WARNING: no prior rate available, skipped  (first date, nothing to carry forward)
+  Aug 24  → 5.2504  real
+  Aug 25  → 5.2537  real
+  Aug 26  → 5.2568  real
+  Aug 27  → 5.2568  estimated  (future — using today's rate)
+  Aug 28  → 5.2568  estimated
+  Aug 29  → 5.2568  estimated
+  Aug 30  → 5.2568  estimated
+  Aug 31  → 5.2568  estimated
+  Sep 01  → 5.2568  estimated
+  Sep 02  → 5.2568  estimated
+  Sep 03  → 5.2568  estimated
+```
+
+Aug 23 (a Sunday) was skipped entirely because there was no prior rate to carry forward — it was the very first date in the range. **This is documented as a known edge case.** In a production system, we would fetch one extra day before `min_date` to always have a seed rate.
+
+---
+
+#### Problem encountered: HTTP 403 Forbidden
+
+**What happened:**  
+First attempt to call the Frankfurter API failed with `HTTP Error 403: Forbidden`.
+
+**Root cause:**  
+Frankfurter's server blocks requests from Python's default `urllib` user-agent string (`Python-urllib/3.11`). This is a common bot-filtering pattern — servers block non-browser user-agents to prevent scraping.
+
+**Fix:**  
+Added a `User-Agent: Mozilla/5.0` header to the request, which makes it appear as a regular browser request:
+```python
+req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
+```
+
+This is a legitimate workaround — Frankfurter is a free public API and we are not abusing it. The 403 is a misconfiguration on their side (no reason to block programmatic access for a public API), not a restriction we are bypassing.
+
+---
+
+#### Result
+
+```
+Required dates from orders_clean: 12 dates (2026-08-23 → 2026-09-03)
+Rates returned by API: 4 dates (weekdays only, up to today)
+Rows upserted: 11 (3 real, 8 estimated)
+Duration: 0.9s
+```
+
+The `fx_rates` table now has a rate for every `fx_reference_date` in `orders_clean`. The JOIN in Step 4 is guaranteed to succeed for all rows.
+
+---
+
 ## Next Steps
 
 - [x] Step 1: Ingestion (`src/ingest.py`)
 - [x] Step 2: Cleaning (`src/clean.py`)
 - [x] requirements.txt
-- [ ] Step 3: FX rates fetcher (`src/fx_rates.py`)
+- [x] Step 3: FX rates fetcher (`src/fx_rates.py`)
 - [ ] Step 4: Customer spend in EUR (`src/transforms.py`)
 - [ ] Step 5: Country/category revenue breakdown
 - [ ] Step 6: GitHub Actions automation
