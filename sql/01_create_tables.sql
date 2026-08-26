@@ -71,15 +71,16 @@ CREATE TABLE IF NOT EXISTS fx_rates (
 -- Refreshed daily; dropped and recreated each run
 -- -------------------------------------------------------
 CREATE TABLE IF NOT EXISTS customer_spend_eur (
-    customer_id       INTEGER,
-    customer_email    TEXT,
-    country           TEXT,
-    total_orders      INTEGER,
-    total_items       INTEGER,
-    total_spent_eur   NUMERIC(14, 4),
-    last_order_date   DATE,
+    customer_id                INTEGER,
+    customer_email             TEXT,
+    country                    TEXT,     -- most frequent shipping country
+    total_orders               INTEGER,
+    total_items                INTEGER,
+    total_spent_eur            NUMERIC(14, 4),
+    last_order_date            DATE,
+    multiple_countries_bought  BOOLEAN DEFAULT FALSE,  -- TRUE if customer ordered from >1 country
     -- audit
-    computed_at       TIMESTAMPTZ DEFAULT NOW(),
+    computed_at                TIMESTAMPTZ DEFAULT NOW(),
     PRIMARY KEY (customer_id)
 );
 

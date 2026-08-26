@@ -561,14 +561,178 @@ The `fx_rates` table now has a rate for every `fx_reference_date` in `orders_cle
 
 ---
 
+### 2.2 Step 4: Customer Spend in EUR (`src/transforms.py` + `sql/03_customer_spend.sql`)
+
+#### Design decisions made
+
+**Decision 1 — Exclude refunded orders**
+
+`orders_clean` contains both `completed` (8,420) and `refunded` (403) rows. The challenge asks for "total amount spent" per customer.
+
+> "Amount spent" means money that left the customer's pocket and stayed gone. A refunded order means the money was returned — it was never truly "spent".
+
+Chose to **filter `WHERE status = 'completed'`** only. Refunded orders are excluded from the aggregation.
+
+**Decision 2 — Exclude NULL customer_id rows**
+
+103 orders have no `customer_id` (flagged as `had_null_customer = TRUE` in `orders_clean`). These cannot be attributed to any customer so they are excluded from `customer_spend_eur`.
+
+**Decision 3 — Extra informational columns**
+
+The challenge requires only `customer_id` + `total_spent_eur`. We added:
+
+| Column | Reason |
+|--------|--------|
+| `customer_email` | Identify the customer by name, not just ID |
+| `country` | Where the customer primarily orders from |
+| `total_orders` | Count of distinct order IDs |
+| `total_items` | Total units purchased |
+| `last_order_date` | Most recent purchase date |
+
+These cost nothing extra and make the table significantly more useful for analysis.
+
+**Decision 4 — RON → EUR conversion formula**
+
+The `fx_rates` table stores rates as "1 EUR = X RON". To convert a RON amount to EUR:
+
+```
+EUR = RON_amount ÷ rate
+```
+
+Because: if 1 EUR = 5.25 RON, then 100 RON = 100 ÷ 5.25 = €19.05
+
+EUR-denominated orders pass through unchanged (no division needed).
+
+**Decision 5 — Add `multiple_countries_bought` flag instead of silently picking a primary country**
+
+**Problem:** 10 customers have `completed` orders shipped to all 4 countries (RO, DE, BG, HU). The `customer_spend_eur` table needs exactly one row per customer (`PRIMARY KEY customer_id`), so we can't group by `(customer_id, country)` — it would produce 4 rows per multi-country customer and fail with a duplicate key error.
+
+**Options considered:**
+
+| Option | Approach | Problem |
+|--------|----------|---------|
+| A | Group by `(customer_id, country)` | Breaks the PK — impossible |
+| B | Pick primary country silently, discard the rest | Loses information — nobody knows the customer is cross-border |
+| C | Pick primary country + flag `multiple_countries_bought = TRUE` | ✅ Preserves one row per customer AND exposes the complexity |
+
+**We chose Option C.**
+
+`country` = the country the customer ordered from most frequently (most orders placed). This is determined by a `DISTINCT ON (customer_id) ... ORDER BY COUNT(*) DESC` query.
+
+`multiple_countries_bought` = `TRUE` if the customer has `completed` orders from more than one distinct country. Computed by `COUNT(DISTINCT country) > 1`.
+
+**Why this is the right decision:**
+- Does not hide a data complexity behind a silent assumption
+- Allows analysts to segment cross-border customers instantly: `WHERE multiple_countries_bought = TRUE`
+- Cross-border buyers are often a high-value segment worth specific marketing attention
+- It is trivially cheap to compute (one extra CTE, one boolean column)
+- 10 customers qualify — small but real signal
+
+**Schema change applied live:**
+```sql
+ALTER TABLE customer_spend_eur
+ADD COLUMN IF NOT EXISTS multiple_countries_bought BOOLEAN DEFAULT FALSE;
+```
+
+---
+
+#### Problem encountered: Duplicate key violation on `customer_id`
+
+**What happened:**  
+First run failed with `UniqueViolation: Key (customer_id)=(299) already exists`.
+
+**Root cause:**  
+The original query grouped by `(customer_id, customer_email, country)`. Since `country` is an **order-level attribute** (not a customer-level one), 10 customers who ordered from all 4 countries (RO, DE, BG, HU) generated 4 rows each — all with the same `customer_id`, violating the primary key.
+
+```
+customer_id=299  country=RO  spent=...  ← row 1
+customer_id=299  country=DE  spent=...  ← row 2 → PK violation!
+customer_id=299  country=BG  spent=...  ← row 3
+customer_id=299  country=HU  spent=...  ← row 4
+```
+
+**Fix:**  
+Split the query into two CTEs:
+1. `spend` — aggregates totals grouped only by `(customer_id, customer_email)` — no country
+2. `primary_country` — finds each customer's most frequently ordered-from country using `DISTINCT ON` + `COUNT(*) DESC`
+
+Then JOIN both to produce one row per customer with their dominant country.
+
+**Additional improvement — `multiple_countries_bought` flag:**  
+After fixing the bug, we added a third CTE `country_count` and a new boolean column to the table:
+
+```sql
+country_count AS (
+    SELECT customer_id, COUNT(DISTINCT country) > 1 AS multiple_countries_bought
+    FROM orders_clean
+    WHERE status = 'completed' AND customer_id IS NOT NULL
+    GROUP BY customer_id
+)
+```
+
+| Column | Type | Meaning |
+|--------|------|---------|
+| `country` | TEXT | Customer's most frequent shipping destination |
+| `multiple_countries_bought` | BOOLEAN | TRUE if customer has orders from more than one country |
+
+**Why this adds value:**  
+Instead of hiding the multi-country complexity in a silent pick of "primary country", we now expose it explicitly. An analyst can instantly filter `WHERE multiple_countries_bought = TRUE` to identify cross-border buyers — a potentially valuable segment for international marketing or logistics analysis. 10 customers qualify.
+
+Schema change applied to Supabase via `ALTER TABLE customer_spend_eur ADD COLUMN IF NOT EXISTS multiple_countries_bought BOOLEAN DEFAULT FALSE`.
+
+---
+
+#### Anomaly discovered post-implementation: corrupt unit_price
+
+While investigating why some customers showed €1M+ total spend, found:
+
+```
+order_id   product           qty  unit_price    line_total
+ORD12890   4K Action Camera  1    999999.0000   €999,999
+```
+
+A single order line with `unit_price = 999,999` — clearly a data entry error (probably a sentinel/error value, not a real price). This is **a 10th data quality issue** not found during initial exploration because it doesn't violate obvious range checks (it's not negative, not zero, not NULL).
+
+**Decision**: We keep it in `orders_clean` as-is. Removing it would require an arbitrary price cap threshold, which is risky — what if some product genuinely costs €10,000? We flag it in this journal and mention it in the WRITEUP as a production monitoring concern.
+
+In a real system: this would trigger a price anomaly alert (e.g. "any order line > €10,000 requires manual review").
+
+---
+
+#### Result
+
+```
+=== STEP 4: CUSTOMER SPEND IN EUR ===
+Top 5 customers:
+  customer_id=215  country=RO  total_spent=€1,001,184.13  ← driven by ORD12890 corrupt price
+  customer_id=1248 country=RO  total_spent=€1,000,403.65
+  customer_id=41   country=DE  total_spent=€1,000,240.64
+  customer_id=455  country=RO  total_spent=€1,000,215.71
+  customer_id=831  country=HU  total_spent=€1,000,193.69
+Done. 1826 customers in 0.6s
+
+=== STEP 5: COUNTRY/CATEGORY REVENUE ===
+I choosed to include Books AND Electronics. Not only one of these categories.
+  DE   €2,037,042.39  (372 orders)
+  RO   €1,326,338.67  (1499 orders)
+  BG   €1,030,457.72  (333 orders)
+  HU   below €40,000 threshold — excluded
+Done. 3 countries in 0.3s
+```
+
+✅ `customer_spend_eur` — 1,826 customers loaded  
+✅ `country_category_revenue` — 3 countries qualify (DE, RO, BG); HU below threshold
+
+---
+
 ## Next Steps
 
 - [x] Step 1: Ingestion (`src/ingest.py`)
 - [x] Step 2: Cleaning (`src/clean.py`)
 - [x] requirements.txt
 - [x] Step 3: FX rates fetcher (`src/fx_rates.py`)
-- [ ] Step 4: Customer spend in EUR (`src/transforms.py`)
-- [ ] Step 5: Country/category revenue breakdown
+- [x] Step 4: Customer spend in EUR
+- [x] Step 5: Country/category revenue breakdown
 - [ ] Step 6: GitHub Actions automation
 - [ ] Step 7: WRITEUP.md
 - [ ] Step 8: Submit
