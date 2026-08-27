@@ -725,6 +725,80 @@ Done. 3 countries in 0.3s
 
 ---
 
+### 2.3 Step 6: GitHub Actions Automation
+
+#### What was built
+
+Two files:
+
+| File | Purpose |
+|------|---------|
+| `src/pipeline.py` | Orchestrator — calls all 5 steps in sequence, stops on first failure |
+| `.github/workflows/daily_pipeline.yml` | Cron trigger running at 17:00 UTC daily |
+
+#### Design decisions
+
+**Decision 1 — Run all 5 steps, not just 4–5**
+
+The challenge says "automate steps 4–5". But steps 4 and 5 depend on steps 1–3 being fresh. Running only the aggregations on stale data would produce incorrect results if the source API changes. Decision: run the full pipeline every day (ingest → clean → fx → transforms).
+
+**Decision 2 — Run at 17:00 UTC (19:00 Romania)**
+
+ECB publishes daily FX reference rates at ~16:00 CET (15:00 UTC). If the pipeline runs before that, today's real rate is unavailable and the fx_rates step stores an estimate instead. By running at 17:00 UTC, the real rate is guaranteed to be available, meaning fewer `is_estimated = TRUE` rows each day.
+
+**Decision 3 — Automatic shut-off date**
+
+The challenge says "tear down after 3–5 days". Rather than manually disabling the workflow, we added a hard cut-off in `pipeline.py`:
+
+```python
+PIPELINE_END_DATE = date(2026, 9, 1)
+
+if today > PIPELINE_END_DATE:
+    logger.info("Pipeline end date reached. Exiting.")
+    sys.exit(0)
+```
+
+After Sep 1, the workflow still runs (GitHub cron fires) but exits immediately without touching the database. No cost, no side effects.
+
+**Decision 4 — Fail fast**
+
+If any step fails, the pipeline calls `sys.exit(1)` immediately. This:
+- Marks the GitHub Actions run as ❌ (red)
+- Sends an automatic email notification
+- Prevents downstream steps from running on bad data
+
+**Decision 5 — Secrets strategy (Option B)**
+
+Two secrets stored in GitHub repository secrets:
+
+| Secret | Why |
+|--------|-----|
+| `DATABASE_URL` | Contains the database password — must never be in code |
+| `ORDERS_API_KEY` | Technically a publishable key, but best practice is to keep all API keys out of source code |
+
+Other config values (`ORDERS_API_URL`, `FX_API_BASE_URL`) have safe hardcoded defaults and contain no sensitive information.
+
+---
+
+#### Problem encountered: `&&` not valid in PowerShell
+
+When trying to chain `git add . && git commit && git push` in one command, PowerShell rejected `&&` (it's a bash syntax). Fixed by separating into three commands with `;` separator.
+
+---
+
+#### Result
+
+```
+Daily Data Pipeline #1
+Triggered: manually (workflow_dispatch)
+Status:    ✅ Success
+Duration:  32 seconds (run-pipeline job: 24s)
+```
+
+First automated run succeeded on GitHub's Ubuntu machine using injected secrets. The pipeline will now run automatically every day at 17:00 UTC until 2026-09-01.
+
+---
+
 ## Next Steps
 
 - [x] Step 1: Ingestion (`src/ingest.py`)
@@ -733,6 +807,6 @@ Done. 3 countries in 0.3s
 - [x] Step 3: FX rates fetcher (`src/fx_rates.py`)
 - [x] Step 4: Customer spend in EUR
 - [x] Step 5: Country/category revenue breakdown
-- [ ] Step 6: GitHub Actions automation
+- [x] Step 6: GitHub Actions automation
 - [ ] Step 7: WRITEUP.md
 - [ ] Step 8: Submit
