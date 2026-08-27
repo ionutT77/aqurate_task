@@ -136,6 +136,9 @@ COUNTRY_REVENUE_SQL = """
     )::NUMERIC, 2) > %s
     ORDER BY total_revenue_eur DESC
 """
+#this sql is meant only for python code
+# this is a simple sql quary meant to be executed in psql console
+# it is not in the same table as the other sql files
 
 INSERT_REVENUE_SQL = """
     INSERT INTO country_category_revenue (country, total_revenue_eur, order_count)
