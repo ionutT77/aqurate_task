@@ -799,6 +799,12 @@ First automated run succeeded on GitHub's Ubuntu machine using injected secrets.
 
 ---
 
+### 2.4 Pre-Writeup Audit & Cleanup — 2026-08-27
+
+Before writing the final WRITEUP, a full audit was conducted across all files in the repository. I cleaned up the project and arranged the structure. Every source file, SQL script, configuration file, and the gitignore were reviewed to ensure correctness, consistency, and that nothing relevant was missing from GitHub or incorrectly exposed.
+
+The audit confirmed the pipeline is complete and the repository is in a clean, submission-ready state.
+
 ## Next Steps
 
 - [x] Step 1: Ingestion (`src/ingest.py`)
@@ -808,13 +814,7 @@ First automated run succeeded on GitHub's Ubuntu machine using injected secrets.
 - [x] Step 4: Customer spend in EUR
 - [x] Step 5: Country/category revenue breakdown
 - [x] Step 6: GitHub Actions automation
-- [ ] Step 7: WRITEUP.md
-- [ ] Step 8: Submit
+- [x] Step 7: WRITEUP.md
+- [x] Step 8: Submit
 
 ---
-
-### 2.4 Pre-Writeup Audit — 2026-08-27
-
-Before writing the final WRITEUP, a full audit was conducted across all files in the repository. Every source file, SQL script, configuration file, and the gitignore were reviewed to ensure correctness, consistency, and that nothing relevant was missing from GitHub or incorrectly exposed.
-
-The audit confirmed the pipeline is complete and the repository is in a clean, submission-ready state.
