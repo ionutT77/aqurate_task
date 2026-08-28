@@ -40,5 +40,5 @@ All pipeline steps are idempotent — safe to rerun at any time.
 
 ## Documentation
 
-- `PROJECT_JOURNAL.md` — step-by-step log of every decision and problem encountered
-- `WRITEUP.md` — summary of data issues, engineering decisions, and monitoring strategy
+- `PROJECT_JOURNAL.md` — step-by-step log of every decision and problem encountered !!
+- `WRITEUP.pdf` — summary of data issues, engineering decisions, and monitoring strategy
