@@ -818,3 +818,13 @@ The audit confirmed the pipeline is complete and the repository is in a clean, s
 - [x] Step 8: Submit
 
 ---
+
+
+### Issues with automatic workflow:
+
+After some days I realised that the pipeline wasn't running at the exact time.
+This issue was caused by the fact that the GitHub Actions is free.
+SO: The schedule event can be delayed during periods of high loads of GitHub Actions workflow runs. High load times include the start of every hour.
+
+The automated workflow has ~ an 8-hour delay
+Paid GitHub Runners, have priority over free ones, and the workflow would run on time. (as a side note).
