@@ -16,6 +16,7 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # Auto shut-off: challenge says tear down after 3-5 days
+# so i choose to end it on 1 of september.
 PIPELINE_END_DATE = date(2026, 9, 1)
 
 
